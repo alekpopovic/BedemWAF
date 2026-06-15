@@ -17,3 +17,9 @@ TODO:
 - Define initial REST resources
 - Add OpenAPI generation
 - Add unit tests for validation and authorization boundaries
+
+Run the placeholder service:
+
+```bash
+go run ./cmd/control-api
+```

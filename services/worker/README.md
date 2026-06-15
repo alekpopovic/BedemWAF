@@ -16,3 +16,9 @@ TODO:
 - Define event enrichment pipeline
 - Define retention policy jobs
 - Add unit tests for job handlers
+
+Run the placeholder service:
+
+```bash
+go run ./cmd/worker
+```

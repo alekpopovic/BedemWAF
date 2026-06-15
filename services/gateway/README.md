@@ -17,3 +17,9 @@ TODO:
 - Add reverse proxy skeleton
 - Add Coraza integration
 - Add unit tests for policy decision logic
+
+Run the placeholder service:
+
+```bash
+go run ./cmd/gateway
+```

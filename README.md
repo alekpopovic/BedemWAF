@@ -1,20 +1,30 @@
 # BedemWAF
 
-BedemWAF is a self-hosted managed web application firewall platform designed to
-sit in front of NGINX origins.
+BedemWAF is a self-hosted managed web application firewall platform for teams
+that want AWS WAF-style policy management while keeping enforcement in their own
+infrastructure. It is designed to sit directly in front of NGINX origins and
+make defensive traffic decisions before requests reach the application.
 
 ```text
 Internet -> BedemWAF Gateway -> NGINX Origin -> Application
 ```
 
-The goal is to provide AWS WAF-like policy management for teams that want to run
-their own edge enforcement layer: OWASP CRS-compatible inspection, count/block
-rollout, IP sets, rate limits, structured audit events, and dashboard visibility.
+The product has two halves:
+
+- A Go data plane gateway that reverse proxies traffic, inspects requests with
+  Coraza and OWASP CRS-compatible rules, applies rate limits, and emits
+  redacted audit events.
+- A managed control plane made of a Go REST API, background worker, and Next.js
+  dashboard for configuring tenants, applications, origins, policies, rule
+  groups, IP sets, rate limits, and event analytics.
+
+BedemWAF is defensive software only. It is not a CDN, exploit framework,
+scanner, or L3/L4 DDoS protection system.
 
 ## MVP Scope
 
-BedemWAF is defensive software. The MVP focuses on safe policy enforcement and
-operational visibility.
+The MVP focuses on safe policy rollout, clear operations, and auditable
+decisions.
 
 Included:
 
@@ -39,13 +49,13 @@ Not included:
 ```text
 .
 ├── dashboard/              # Next.js admin UI
+├── deployments/            # Local Docker Compose and service config examples
 ├── docs/                   # Architecture and operations documentation
-├── infra/                  # Local and deployment infrastructure
 ├── services/
 │   ├── control-api/        # Go REST API and OpenAPI docs
 │   ├── gateway/            # Go reverse proxy, WAF, and enforcement data plane
 │   └── worker/             # Go async jobs and retention processing
-├── docker-compose.yml      # Local development dependencies
+├── scripts/                # Local developer helper scripts
 └── README.md
 ```
 
@@ -87,23 +97,48 @@ retention cleanup, and future background maintenance tasks.
 
 ## Local Development
 
-The initial `docker-compose.yml` starts datastore dependencies only. Application
-service containers will be added when each service has its first runnable entry
-point.
+Copy the example environment file before starting local dependencies:
 
 ```bash
-docker compose up -d
+cp .env.example .env
+./scripts/dev-up.sh
 ```
 
-TODO:
+The local Compose stack lives in `deployments/` and currently starts Postgres,
+Redis, and ClickHouse. Gateway, control API, and worker service entries are
+included as placeholders and will be wired to Dockerfiles once each service has
+real runtime behavior.
 
-- Add Go modules for `services/gateway`, `services/control-api`, and
-  `services/worker`
-- Add a Next.js app under `dashboard`
+Run the minimal Go services directly:
+
+```bash
+go run ./services/gateway/cmd/gateway
+go run ./services/control-api/cmd/control-api
+go run ./services/worker/cmd/worker
+```
+
+## Current Implementation Status
+
+- Monorepo structure is in place
+- Documentation is specific to the intended BedemWAF model
+- Go services have minimal compiling entrypoints
+- Docker Compose validates from `deployments/`
+- Business logic is intentionally left as TODOs for reviewable follow-up work
+
+Next implementation steps:
+
+- Add gateway configuration loading and reverse proxy skeleton
+- Add Coraza integration and CRS rule loading
+- Add policy decision model and unit tests
+- Add control API router, validation, migrations, and OpenAPI generation
 - Add database migrations
-- Add OpenAPI generation for the control API
-- Add local seed data and example NGINX origin configuration
+- Scaffold the Next.js dashboard
+- Add event ingestion and ClickHouse schema
 
 ## Documentation
 
 - [Architecture](docs/architecture.md)
+- [Threat Model](docs/threat-model.md)
+- [Local Development](docs/local-development.md)
+- [Policy Model](docs/policy-model.md)
+- [Event Schema](docs/event-schema.md)

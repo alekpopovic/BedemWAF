@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bedemwaf}
+      POSTGRES_USER: ${POSTGRES_USER:-bedemwaf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bedemwaf_dev_password}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-bedemwaf} -d $${POSTGRES_DB:-bedemwaf}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-bedemwaf}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-bedemwaf}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-bedemwaf_dev_password}
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  gateway:
+    image: alpine:3.20
+    profiles: ["apps"]
+    command: ["sh", "-c", "echo TODO: build and run BedemWAF gateway container"]
+    depends_on:
+      - redis
+
+  control-api:
+    image: alpine:3.20
+    profiles: ["apps"]
+    command: ["sh", "-c", "echo TODO: build and run BedemWAF control-api container"]
+    depends_on:
+      - postgres
+      - clickhouse
+
+  worker:
+    image: alpine:3.20
+    profiles: ["apps"]
+    command: ["sh", "-c", "echo TODO: build and run BedemWAF worker container"]
+    depends_on:
+      - postgres
+      - redis
+      - clickhouse
+
+volumes:
+  postgres_data:
+  redis_data:
+  clickhouse_data:

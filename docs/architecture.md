@@ -16,6 +16,72 @@ NGINX Origin
 Application
 ```
 
+## Local Development Topology
+
+```text
+                     +-------------------+
+                     |    Dashboard      |
+                     |    Next.js UI     |
+                     +---------+---------+
+                               |
+                               v
+                     +-------------------+
+                     |   Control API     |
+                     |   Go REST API     |
+                     +----+---------+----+
+                          |         |
+                          v         v
+                  +----------+   +-------------+
+                  | Postgres |   | ClickHouse  |
+                  | config   |   | events      |
+                  +----------+   +-------------+
+
+Internet/client
+      |
+      v
++-------------------+       +---------+
+| BedemWAF Gateway  +------>| Redis   |
+| Go reverse proxy  |       | limits  |
++---------+---------+       +---------+
+          |
+          v
++-------------------+
+| NGINX Origin      |
++---------+---------+
+          |
+          v
++-------------------+
+| Application       |
++-------------------+
+```
+
+## Runtime Decision Flow
+
+```text
+Request
+  |
+  v
+Load app/origin/policy config
+  |
+  v
+Normalize request metadata
+  |
+  +--> IP set checks
+  |
+  +--> Rate-limit checks
+  |
+  +--> Coraza / OWASP CRS inspection
+  |
+  v
+Policy decision: allow, count, or block
+  |
+  +--> Emit redacted audit event asynchronously
+  |
+  +--> Forward allowed requests to NGINX origin
+  |
+  +--> Return defensive block response for blocked requests
+```
+
 ## Design Goals
 
 - Provide a managed WAF experience without requiring a hosted edge provider
