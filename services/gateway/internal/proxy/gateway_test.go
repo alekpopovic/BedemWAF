@@ -204,6 +204,37 @@ func TestRequestBodyRestoredBeforeProxying(t *testing.T) {
 	}
 }
 
+func TestCustomRuleDecisionIncludedInAuditEvent(t *testing.T) {
+	var auditOutput bytes.Buffer
+	gateway := testGatewayWithOptions(t, testGatewayOptions{
+		mode:      "count",
+		originURL: "http://origin.local",
+		limiter:   ratelimit.NoopLimiter{},
+		waf:       waf.AllowEngine{},
+		transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return textResponse(req, http.StatusOK, "ok")
+		}),
+		auditOut: &auditOutput,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.local/admin", nil)
+	req.RemoteAddr = "198.51.100.10:12345"
+	rec := httptest.NewRecorder()
+
+	gateway.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	event := decodeAuditEvent(t, auditOutput.Bytes())
+	if event["action"] != string(decision.ActionCount) {
+		t.Fatalf("audit action = %v, want count", event["action"])
+	}
+	if event["matched_rule_id"] != "rule-admin" {
+		t.Fatalf("matched_rule_id = %v, want rule-admin", event["matched_rule_id"])
+	}
+}
+
 func testGateway(t *testing.T, mode string, originURL string, limiter ratelimit.Limiter) *Gateway {
 	return testGatewayWithOptions(t, testGatewayOptions{
 		mode:      mode,
@@ -242,6 +273,15 @@ func testGatewayWithOptions(t *testing.T, opts testGatewayOptions) *Gateway {
 				Mode:          opts.mode,
 				DefaultAction: "allow",
 				IPBlocklist:   []string{"203.0.113.10/32"},
+				CustomRules: []config.CustomRuleConfig{{
+					ID:         "rule-admin",
+					Name:       "Admin block",
+					Priority:   100,
+					Enabled:    true,
+					Action:     "block",
+					StatusCode: 403,
+					When:       config.ConditionConfig{PathStartsWith: "/admin"},
+				}},
 				RateLimits: []config.RateLimitConfig{{
 					Name:          "test-limit",
 					Key:           "ip",

@@ -29,9 +29,33 @@ apps:
       ip_blocklist:
         - "203.0.113.10/32"
       ip_allowlist: []
+      ip_sets:
+        office_ips:
+          - "198.51.100.0/24"
       rate_limits:
         - name: "global-ip-limit"
           key: "ip"
           limit: 100
           window_seconds: 60
           action: "block"
+      custom_rules:
+        - id: "rule-admin-office-only"
+          name: "Admin only from office IPs"
+          priority: 100
+          enabled: true
+          action: "block"
+          status_code: 403
+          when:
+            all:
+              - path_starts_with: "/admin"
+              - client_ip_not_in_ip_set: "office_ips"
+        - id: "rule-block-bad-ua"
+          name: "Block suspicious user agent"
+          priority: 200
+          enabled: true
+          action: "block"
+          status_code: 403
+          when:
+            header_contains:
+              name: "User-Agent"
+              value: "bad-bot-test"

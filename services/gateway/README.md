@@ -84,6 +84,69 @@ To use OWASP CRS-compatible rules, mount CRS into the gateway container and
 uncomment the placeholder `Include` lines in `rules/coraza.conf`. See
 [rules/README.md](rules/README.md).
 
+## Custom Rules
+
+Custom rules are defined under each app policy. They are deterministic,
+priority-ordered, and do not support scripts or regex.
+
+Supported actions:
+
+- `allow`
+- `count`
+- `block`
+
+Supported conditions:
+
+- `method_equals`
+- `path_equals`
+- `path_starts_with`
+- `host_equals`
+- `header_contains`
+- `header_equals`
+- `query_parameter_contains`
+- `client_ip_in_ip_set`
+- `client_ip_not_in_ip_set`
+- `all`
+- `any`
+
+Example:
+
+```yaml
+policy:
+  mode: "count"
+  default_action: "allow"
+  ip_sets:
+    office_ips:
+      - "198.51.100.0/24"
+  custom_rules:
+    - id: "rule-admin-office-only"
+      name: "Admin only from office IPs"
+      priority: 100
+      enabled: true
+      action: "block"
+      status_code: 403
+      when:
+        all:
+          - path_starts_with: "/admin"
+          - client_ip_not_in_ip_set: "office_ips"
+
+    - id: "rule-block-bad-ua"
+      name: "Block suspicious user agent"
+      priority: 200
+      enabled: true
+      action: "block"
+      status_code: 403
+      when:
+        header_contains:
+          name: "User-Agent"
+          value: "bad-bot-test"
+```
+
+Rules are sorted by `priority` ascending. The first matching `block` rule wins.
+`count` rules are logged but do not block. An `allow` rule only short-circuits
+later custom block rules when `terminal_allow: true` is set. Header names are
+canonicalized before evaluation.
+
 ## Tests
 
 ```bash

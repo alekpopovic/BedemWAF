@@ -21,6 +21,7 @@ type Decision struct {
 	Action        Action
 	Reason        string
 	MatchedRuleID string
+	StatusCode    int
 }
 
 func Allow() Decision {
@@ -28,7 +29,7 @@ func Allow() Decision {
 }
 
 func Block(reason, matchedRuleID string) Decision {
-	return Decision{Action: ActionBlock, Reason: reason, MatchedRuleID: matchedRuleID}
+	return Decision{Action: ActionBlock, Reason: reason, MatchedRuleID: matchedRuleID, StatusCode: 403}
 }
 
 func RateLimit(reason, matchedRuleID string) Decision {
@@ -37,6 +38,15 @@ func RateLimit(reason, matchedRuleID string) Decision {
 
 func Count(reason, matchedRuleID string) Decision {
 	return Decision{Action: ActionCount, Reason: reason, MatchedRuleID: matchedRuleID}
+}
+
+func AllowRule(reason, matchedRuleID string) Decision {
+	return Decision{Action: ActionAllow, Reason: reason, MatchedRuleID: matchedRuleID}
+}
+
+func WithStatus(d Decision, statusCode int) Decision {
+	d.StatusCode = statusCode
+	return d
 }
 
 func (d Decision) WouldBlock() bool {

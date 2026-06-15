@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"net/url"
 	"os"
@@ -47,11 +48,13 @@ type OriginConfig struct {
 }
 
 type PolicyConfig struct {
-	Mode          string            `yaml:"mode"`
-	DefaultAction string            `yaml:"default_action"`
-	IPBlocklist   []string          `yaml:"ip_blocklist"`
-	IPAllowlist   []string          `yaml:"ip_allowlist"`
-	RateLimits    []RateLimitConfig `yaml:"rate_limits"`
+	Mode          string              `yaml:"mode"`
+	DefaultAction string              `yaml:"default_action"`
+	IPBlocklist   []string            `yaml:"ip_blocklist"`
+	IPAllowlist   []string            `yaml:"ip_allowlist"`
+	IPSets        map[string][]string `yaml:"ip_sets"`
+	RateLimits    []RateLimitConfig   `yaml:"rate_limits"`
+	CustomRules   []CustomRuleConfig  `yaml:"custom_rules"`
 }
 
 type RateLimitConfig struct {
@@ -62,13 +65,50 @@ type RateLimitConfig struct {
 	Action        string `yaml:"action"`
 }
 
+type CustomRuleConfig struct {
+	ID            string          `yaml:"id"`
+	Name          string          `yaml:"name"`
+	Priority      int             `yaml:"priority"`
+	Enabled       bool            `yaml:"enabled"`
+	Action        string          `yaml:"action"`
+	StatusCode    int             `yaml:"status_code"`
+	TerminalAllow bool            `yaml:"terminal_allow"`
+	When          ConditionConfig `yaml:"when"`
+}
+
+type ConditionConfig struct {
+	All                []ConditionConfig `yaml:"all"`
+	Any                []ConditionConfig `yaml:"any"`
+	MethodEquals       string            `yaml:"method_equals"`
+	PathEquals         string            `yaml:"path_equals"`
+	PathStartsWith     string            `yaml:"path_starts_with"`
+	HostEquals         string            `yaml:"host_equals"`
+	HeaderContains     *HeaderMatch      `yaml:"header_contains"`
+	HeaderEquals       *HeaderMatch      `yaml:"header_equals"`
+	QueryParamContains *QueryParamMatch  `yaml:"query_parameter_contains"`
+	ClientIPInIPSet    string            `yaml:"client_ip_in_ip_set"`
+	ClientIPNotInIPSet string            `yaml:"client_ip_not_in_ip_set"`
+}
+
+type HeaderMatch struct {
+	Name  string `yaml:"name"`
+	Value string `yaml:"value"`
+}
+
+type QueryParamMatch struct {
+	Name  string `yaml:"name"`
+	Value string `yaml:"value"`
+}
+
 func LoadFile(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, err
 	}
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, err
 	}
 	applyDefaults(&cfg)
@@ -103,6 +143,14 @@ func applyDefaults(cfg *Config) {
 		}
 		if cfg.Apps[i].Policy.DefaultAction == "" {
 			cfg.Apps[i].Policy.DefaultAction = "allow"
+		}
+		for j := range cfg.Apps[i].Policy.CustomRules {
+			if cfg.Apps[i].Policy.CustomRules[j].Action == "" {
+				cfg.Apps[i].Policy.CustomRules[j].Action = "count"
+			}
+			if cfg.Apps[i].Policy.CustomRules[j].StatusCode == 0 {
+				cfg.Apps[i].Policy.CustomRules[j].StatusCode = 403
+			}
 		}
 	}
 }

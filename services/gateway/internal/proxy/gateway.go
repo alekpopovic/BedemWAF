@@ -131,6 +131,21 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		final = decision.Block("request_body_limit_exceeded", "waf:request_body_limit")
 	}
 	if final.Action == decision.ActionAllow {
+		customDecision := app.EvaluateCustomRules(policy.RequestContext{
+			Method:   r.Method,
+			Path:     r.URL.Path,
+			Host:     host,
+			Headers:  r.Header,
+			Query:    r.URL.Query(),
+			ClientIP: clientIP,
+		})
+		if customDecision.Action == decision.ActionBlock || customDecision.Reason == "custom_rule_allow" {
+			final = customDecision
+		} else if customDecision.Action == decision.ActionCount {
+			final = customDecision
+		}
+	}
+	if final.Action == decision.ActionAllow {
 		wafDecision, err := g.waf.InspectRequest(r.Context(), r, bodyPreview, waf.PolicyContext{
 			RequestID: requestID,
 			AppID:     app.ID,
@@ -148,6 +163,24 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if wafDecision != nil {
 			final = *wafDecision
 		}
+	} else if final.Action == decision.ActionCount && final.Reason == "custom_rule" {
+		wafDecision, err := g.waf.InspectRequest(r.Context(), r, bodyPreview, waf.PolicyContext{
+			RequestID: requestID,
+			AppID:     app.ID,
+			Host:      host,
+			ClientIP:  clientIP.String(),
+			Mode:      app.Mode,
+		})
+		if err != nil {
+			event.Action = string(decision.ActionBlock)
+			event.Reason = "waf_error"
+			g.logger.Warn("waf_inspection_failed", "error", err, "app_id", app.ID, "request_id", requestID)
+			writeJSONError(recorder, http.StatusBadRequest, requestID, "waf inspection failed")
+			return
+		}
+		if wafDecision != nil && wafDecision.Action != decision.ActionAllow {
+			final = *wafDecision
+		}
 	}
 	if final.Action == decision.ActionAllow && app.DefaultAction == decision.ActionBlock {
 		final = decision.Block("default_action", "default_action")
@@ -159,7 +192,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	event.MatchedRuleID = final.MatchedRuleID
 
 	if app.Mode == decision.ModeBlock && final.WouldBlock() {
-		writeJSONError(recorder, http.StatusForbidden, requestID, "request blocked")
+		status := final.StatusCode
+		if status == 0 {
+			status = http.StatusForbidden
+		}
+		writeJSONError(recorder, status, requestID, "request blocked")
 		return
 	}
 
