@@ -22,8 +22,9 @@ type ServerConfig struct {
 }
 
 type RedisConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Addr    string `yaml:"addr"`
+	Enabled  bool   `yaml:"enabled"`
+	Addr     string `yaml:"addr"`
+	FailMode string `yaml:"fail_mode"`
 }
 
 type WAFConfig struct {
@@ -38,6 +39,7 @@ type WAFConfig struct {
 
 type AppConfig struct {
 	ID        string       `yaml:"id"`
+	TenantID  string       `yaml:"tenant_id"`
 	Hostnames []string     `yaml:"hostnames"`
 	Origin    OriginConfig `yaml:"origin"`
 	Policy    PolicyConfig `yaml:"policy"`
@@ -58,11 +60,20 @@ type PolicyConfig struct {
 }
 
 type RateLimitConfig struct {
-	Name          string `yaml:"name"`
-	Key           string `yaml:"key"`
-	Limit         int    `yaml:"limit"`
-	WindowSeconds int    `yaml:"window_seconds"`
-	Action        string `yaml:"action"`
+	ID              string          `yaml:"id"`
+	Name            string          `yaml:"name"`
+	Enabled         bool            `yaml:"enabled"`
+	Priority        int             `yaml:"priority"`
+	MatchExpression ConditionConfig `yaml:"match"`
+	KeyType         string          `yaml:"key_type"`
+	KeyHeader       string          `yaml:"key_header"`
+	Limit           int             `yaml:"limit"`
+	WindowSeconds   int             `yaml:"window_seconds"`
+	Action          string          `yaml:"action"`
+	StatusCode      int             `yaml:"status_code"`
+
+	// Deprecated compatibility alias for older sample configs.
+	Key string `yaml:"key"`
 }
 
 type CustomRuleConfig struct {
@@ -125,6 +136,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Redis.Addr == "" {
 		cfg.Redis.Addr = "localhost:6379"
 	}
+	if cfg.Redis.FailMode == "" {
+		cfg.Redis.FailMode = "open"
+	}
 	if cfg.WAF.Engine == "" {
 		cfg.WAF.Engine = "coraza"
 	}
@@ -143,6 +157,23 @@ func applyDefaults(cfg *Config) {
 		}
 		if cfg.Apps[i].Policy.DefaultAction == "" {
 			cfg.Apps[i].Policy.DefaultAction = "allow"
+		}
+		for j := range cfg.Apps[i].Policy.RateLimits {
+			if cfg.Apps[i].Policy.RateLimits[j].ID == "" {
+				cfg.Apps[i].Policy.RateLimits[j].ID = cfg.Apps[i].Policy.RateLimits[j].Name
+			}
+			if cfg.Apps[i].Policy.RateLimits[j].KeyType == "" {
+				cfg.Apps[i].Policy.RateLimits[j].KeyType = cfg.Apps[i].Policy.RateLimits[j].Key
+			}
+			if cfg.Apps[i].Policy.RateLimits[j].KeyType == "" {
+				cfg.Apps[i].Policy.RateLimits[j].KeyType = "ip"
+			}
+			if cfg.Apps[i].Policy.RateLimits[j].Action == "" {
+				cfg.Apps[i].Policy.RateLimits[j].Action = "count"
+			}
+			if cfg.Apps[i].Policy.RateLimits[j].StatusCode == 0 {
+				cfg.Apps[i].Policy.RateLimits[j].StatusCode = 429
+			}
 		}
 		for j := range cfg.Apps[i].Policy.CustomRules {
 			if cfg.Apps[i].Policy.CustomRules[j].Action == "" {
@@ -189,6 +220,11 @@ func validate(cfg Config) error {
 		if cfg.WAF.RequestBodyLimitBytes < 0 {
 			return fmt.Errorf("waf request_body_limit_bytes must be non-negative")
 		}
+	}
+	switch cfg.Redis.FailMode {
+	case "open", "closed":
+	default:
+		return fmt.Errorf("invalid redis fail_mode %q", cfg.Redis.FailMode)
 	}
 	return nil
 }

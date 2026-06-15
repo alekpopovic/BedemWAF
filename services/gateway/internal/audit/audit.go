@@ -8,21 +8,30 @@ import (
 )
 
 type Event struct {
-	Timestamp     time.Time `json:"timestamp"`
-	RequestID     string    `json:"request_id"`
-	AppID         string    `json:"app_id,omitempty"`
-	Host          string    `json:"host"`
-	ClientIP      string    `json:"client_ip"`
-	Method        string    `json:"method"`
-	Path          string    `json:"path"`
-	Action        string    `json:"action"`
-	Mode          string    `json:"mode,omitempty"`
-	Status        int       `json:"status"`
-	Reason        string    `json:"reason,omitempty"`
-	MatchedRuleID string    `json:"matched_rule_id,omitempty"`
-	UserAgent     string    `json:"user_agent,omitempty"`
-	LatencyMS     int64     `json:"latency_ms"`
-	BodyPreview   string    `json:"body_preview,omitempty"`
+	Timestamp     time.Time  `json:"timestamp"`
+	RequestID     string     `json:"request_id"`
+	AppID         string     `json:"app_id,omitempty"`
+	Host          string     `json:"host"`
+	ClientIP      string     `json:"client_ip"`
+	Method        string     `json:"method"`
+	Path          string     `json:"path"`
+	Action        string     `json:"action"`
+	Mode          string     `json:"mode,omitempty"`
+	Status        int        `json:"status"`
+	Reason        string     `json:"reason,omitempty"`
+	MatchedRuleID string     `json:"matched_rule_id,omitempty"`
+	UserAgent     string     `json:"user_agent,omitempty"`
+	LatencyMS     int64      `json:"latency_ms"`
+	BodyPreview   string     `json:"body_preview,omitempty"`
+	RateLimit     *RateLimit `json:"rate_limit,omitempty"`
+}
+
+type RateLimit struct {
+	Limit     int       `json:"limit"`
+	Remaining int       `json:"remaining"`
+	ResetAt   time.Time `json:"reset_at"`
+	RuleID    string    `json:"rule_id"`
+	Action    string    `json:"action"`
 }
 
 type Logger interface {

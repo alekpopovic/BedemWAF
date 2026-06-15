@@ -283,11 +283,15 @@ func testGatewayWithOptions(t *testing.T, opts testGatewayOptions) *Gateway {
 					When:       config.ConditionConfig{PathStartsWith: "/admin"},
 				}},
 				RateLimits: []config.RateLimitConfig{{
-					Name:          "test-limit",
-					Key:           "ip",
+					ID:            "rl-test",
+					Name:          "Test limit",
+					Enabled:       true,
+					Priority:      100,
+					KeyType:       "ip",
 					Limit:         1,
 					WindowSeconds: 60,
 					Action:        "block",
+					StatusCode:    http.StatusTooManyRequests,
 				}},
 			},
 		}},
@@ -346,7 +350,7 @@ type fakeLimiter struct {
 	decision decision.Decision
 }
 
-func (f fakeLimiter) Check(context.Context, string, string, policy.RateLimitRule) decision.Decision {
+func (f fakeLimiter) Check(context.Context, *policy.App, ratelimit.Request, policy.RateLimitRule) decision.Decision {
 	if f.decision.Action == "" {
 		return decision.Allow()
 	}

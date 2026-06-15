@@ -1,5 +1,7 @@
 package decision
 
+import "time"
+
 type Action string
 
 const (
@@ -22,6 +24,15 @@ type Decision struct {
 	Reason        string
 	MatchedRuleID string
 	StatusCode    int
+	RateLimit     *RateLimitInfo
+}
+
+type RateLimitInfo struct {
+	Limit     int
+	Remaining int
+	ResetAt   time.Time
+	RuleID    string
+	Action    Action
 }
 
 func Allow() Decision {

@@ -6,6 +6,7 @@ server:
 redis:
   enabled: false
   addr: "localhost:6379"
+  fail_mode: "open"
 
 waf:
   enabled: true
@@ -33,11 +34,15 @@ apps:
         office_ips:
           - "198.51.100.0/24"
       rate_limits:
-        - name: "global-ip-limit"
-          key: "ip"
+        - id: "rl-global-ip"
+          name: "Global IP limit"
+          enabled: true
+          priority: 100
+          key_type: "ip"
           limit: 100
           window_seconds: 60
           action: "block"
+          status_code: 429
       custom_rules:
         - id: "rule-admin-office-only"
           name: "Admin only from office IPs"

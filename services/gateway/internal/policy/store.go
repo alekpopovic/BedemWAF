@@ -15,6 +15,7 @@ import (
 
 type App struct {
 	ID              string
+	TenantID        string
 	Hostnames       []string
 	Origin          *url.URL
 	Mode            decision.Mode
@@ -28,11 +29,17 @@ type App struct {
 }
 
 type RateLimitRule struct {
-	Name          string
-	Key           string
-	Limit         int
-	WindowSeconds int
-	Action        decision.Action
+	ID              string
+	Name            string
+	Enabled         bool
+	Priority        int
+	MatchExpression *Condition
+	KeyType         string
+	KeyHeader       string
+	Limit           int
+	WindowSeconds   int
+	Action          decision.Action
+	StatusCode      int
 }
 
 type CustomRule struct {
@@ -129,6 +136,7 @@ func newApp(appCfg config.AppConfig) (*App, error) {
 
 	app := &App{
 		ID:              appCfg.ID,
+		TenantID:        appCfg.TenantID,
 		Hostnames:       appCfg.Hostnames,
 		Origin:          origin,
 		Mode:            decision.Mode(appCfg.Policy.Mode),
@@ -139,15 +147,14 @@ func newApp(appCfg config.AppConfig) (*App, error) {
 		CustomRules:     customRules,
 		RawOriginString: appCfg.Origin.URL,
 	}
-	for _, limit := range appCfg.Policy.RateLimits {
-		app.RateLimits = append(app.RateLimits, RateLimitRule{
-			Name:          limit.Name,
-			Key:           limit.Key,
-			Limit:         limit.Limit,
-			WindowSeconds: limit.WindowSeconds,
-			Action:        decision.Action(limit.Action),
-		})
+	if app.TenantID == "" {
+		app.TenantID = "default"
 	}
+	rateLimits, err := parseRateLimitRules(appCfg.Policy.RateLimits, ipSets)
+	if err != nil {
+		return nil, fmt.Errorf("parse rate limits for app %q: %w", appCfg.ID, err)
+	}
+	app.RateLimits = rateLimits
 	return app, nil
 }
 
@@ -329,6 +336,69 @@ func parseCustomRules(values []config.CustomRuleConfig, ipSets map[string][]neti
 	return rules, nil
 }
 
+func parseRateLimitRules(values []config.RateLimitConfig, ipSets map[string][]netip.Prefix) ([]RateLimitRule, error) {
+	rules := make([]RateLimitRule, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		if strings.TrimSpace(value.ID) == "" {
+			return nil, fmt.Errorf("rate limit id is required")
+		}
+		if _, ok := seen[value.ID]; ok {
+			return nil, fmt.Errorf("duplicate rate limit id %q", value.ID)
+		}
+		seen[value.ID] = struct{}{}
+		if value.Name == "" {
+			return nil, fmt.Errorf("rate limit %q name is required", value.ID)
+		}
+		if value.Limit <= 0 {
+			return nil, fmt.Errorf("rate limit %q limit must be positive", value.ID)
+		}
+		if value.WindowSeconds <= 0 {
+			return nil, fmt.Errorf("rate limit %q window_seconds must be positive", value.ID)
+		}
+		action := decision.Action(value.Action)
+		if action != decision.ActionCount && action != decision.ActionBlock {
+			return nil, fmt.Errorf("rate limit %q has unsupported action %q", value.ID, value.Action)
+		}
+		switch value.KeyType {
+		case "ip", "host", "path", "header", "api_key_placeholder":
+		default:
+			return nil, fmt.Errorf("rate limit %q has unsupported key_type %q", value.ID, value.KeyType)
+		}
+		if value.KeyType == "header" && value.KeyHeader == "" {
+			return nil, fmt.Errorf("rate limit %q key_header is required for header key_type", value.ID)
+		}
+		if value.StatusCode < 0 || value.StatusCode > 999 {
+			return nil, fmt.Errorf("rate limit %q has invalid status_code %d", value.ID, value.StatusCode)
+		}
+		var match *Condition
+		if hasCondition(value.MatchExpression) {
+			condition, err := parseCondition(value.MatchExpression, ipSets)
+			if err != nil {
+				return nil, fmt.Errorf("rate limit %q match: %w", value.ID, err)
+			}
+			match = &condition
+		}
+		rules = append(rules, RateLimitRule{
+			ID:              value.ID,
+			Name:            value.Name,
+			Enabled:         value.Enabled,
+			Priority:        value.Priority,
+			MatchExpression: match,
+			KeyType:         value.KeyType,
+			KeyHeader:       canonicalHeaderName(value.KeyHeader),
+			Limit:           value.Limit,
+			WindowSeconds:   value.WindowSeconds,
+			Action:          action,
+			StatusCode:      value.StatusCode,
+		})
+	}
+	sort.SliceStable(rules, func(i, j int) bool {
+		return rules[i].Priority < rules[j].Priority
+	})
+	return rules, nil
+}
+
 func parseCondition(value config.ConditionConfig, ipSets map[string][]netip.Prefix) (Condition, error) {
 	if err := validateCondition(value, ipSets); err != nil {
 		return Condition{}, err
@@ -408,6 +478,20 @@ func validateCondition(value config.ConditionConfig, ipSets map[string][]netip.P
 		}
 	}
 	return nil
+}
+
+func hasCondition(value config.ConditionConfig) bool {
+	return len(value.All) > 0 ||
+		len(value.Any) > 0 ||
+		value.MethodEquals != "" ||
+		value.PathEquals != "" ||
+		value.PathStartsWith != "" ||
+		value.HostEquals != "" ||
+		value.HeaderContains != nil ||
+		value.HeaderEquals != nil ||
+		value.QueryParamContains != nil ||
+		value.ClientIPInIPSet != "" ||
+		value.ClientIPNotInIPSet != ""
 }
 
 func headerContains(headers http.Header, name string, value string) bool {

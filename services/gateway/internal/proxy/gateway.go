@@ -125,7 +125,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	final := app.EvaluateIP(clientIP)
 	if final.Action == decision.ActionAllow {
-		final = g.evaluateRateLimits(r.Context(), app, clientIP.String())
+		final = g.evaluateRateLimits(r.Context(), r, app, clientIP.String(), host)
 	}
 	if final.Action == decision.ActionAllow && bodyExceeded {
 		final = decision.Block("request_body_limit_exceeded", "waf:request_body_limit")
@@ -190,6 +190,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	event.Action = string(enforced)
 	event.Reason = final.Reason
 	event.MatchedRuleID = final.MatchedRuleID
+	if final.RateLimit != nil {
+		event.RateLimit = &audit.RateLimit{
+			Limit:     final.RateLimit.Limit,
+			Remaining: final.RateLimit.Remaining,
+			ResetAt:   final.RateLimit.ResetAt,
+			RuleID:    final.RateLimit.RuleID,
+			Action:    string(final.RateLimit.Action),
+		}
+	}
 
 	if app.Mode == decision.ModeBlock && final.WouldBlock() {
 		status := final.StatusCode
@@ -247,9 +256,16 @@ func (g *Gateway) prepareRequestBody(r *http.Request) ([]byte, bool, error) {
 	return preview, false, nil
 }
 
-func (g *Gateway) evaluateRateLimits(ctx context.Context, app *policy.App, clientIP string) decision.Decision {
+func (g *Gateway) evaluateRateLimits(ctx context.Context, r *http.Request, app *policy.App, clientIP string, host string) decision.Decision {
 	for _, rule := range app.RateLimits {
-		got := g.limiter.Check(ctx, app.ID, clientIP, rule)
+		got := g.limiter.Check(ctx, app, ratelimit.Request{
+			ClientIP: clientIP,
+			Method:   r.Method,
+			Host:     host,
+			Path:     r.URL.Path,
+			Headers:  r.Header,
+			Query:    r.URL.Query(),
+		}, rule)
 		if got.Action != decision.ActionAllow {
 			return got
 		}

@@ -49,6 +49,7 @@ Important defaults:
   and the immediate peer IP matches that list.
 - Policy mode defaults to `count`.
 - Redis rate limiting is disabled unless `redis.enabled` is `true`.
+- Redis rate limiting fails open by default with `redis.fail_mode: "open"`.
 - Coraza runs when `waf.enabled` is `true`.
 - `waf.rule_engine` defaults to `DetectionOnly`.
 - Request bodies are read only up to `waf.request_body_limit_bytes`, then
@@ -75,6 +76,57 @@ Audit events are newline-delimited JSON written to stdout. They include:
 - `latency_ms`
 
 Request bodies are not logged.
+
+## Rate Limits
+
+Rate limit rules live under each app policy and use Redis fixed-window counters
+when `redis.enabled` is `true`. Redis keys hash high-cardinality values, so raw
+API keys and header values are not stored in Redis keys or audit logs.
+
+Supported `key_type` values:
+
+- `ip`
+- `host`
+- `path`
+- `header`
+- `api_key_placeholder`
+
+Example:
+
+```yaml
+redis:
+  enabled: true
+  addr: "localhost:6379"
+  fail_mode: "open"
+
+policy:
+  rate_limits:
+    - id: "rl-global-ip"
+      name: "Global IP limit"
+      enabled: true
+      priority: 100
+      key_type: "ip"
+      limit: 100
+      window_seconds: 60
+      action: "block"
+      status_code: 429
+
+    - id: "rl-api-key"
+      name: "API key placeholder limit"
+      enabled: true
+      priority: 200
+      key_type: "api_key_placeholder"
+      limit: 1000
+      window_seconds: 60
+      action: "count"
+      status_code: 429
+```
+
+Rules are sorted by `priority` ascending. `action: "count"` records
+`would_rate_limit`-style audit metadata but allows the request. `action: "block"`
+returns `429` when the app policy is in `block` mode. Redis failure defaults to
+fail-open; set `redis.fail_mode: "closed"` only when availability tradeoffs are
+understood.
 
 ## Coraza Rules
 
