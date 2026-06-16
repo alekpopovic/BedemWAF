@@ -1,0 +1,357 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/bedemwaf/bedemwaf/services/control-api/internal/auth"
+	"github.com/bedemwaf/bedemwaf/services/control-api/internal/db"
+	"github.com/bedemwaf/bedemwaf/services/control-api/internal/models"
+)
+
+type Server struct {
+	repo   db.Repository
+	auth   auth.StaticBearer
+	logger *slog.Logger
+}
+
+func NewServer(repo db.Repository, authenticator auth.StaticBearer, logger *slog.Logger) *Server {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Server{repo: repo, auth: authenticator, logger: logger}
+}
+
+func (s *Server) Routes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", s.healthz)
+	mux.HandleFunc("GET /readyz", s.readyz)
+	mux.Handle("GET /v1/tenants", s.requireAuth(http.HandlerFunc(s.listTenants)))
+	mux.Handle("POST /v1/tenants", s.requireAuth(http.HandlerFunc(s.createTenant)))
+	mux.Handle("GET /v1/apps", s.requireAuth(http.HandlerFunc(s.listApps)))
+	mux.Handle("POST /v1/apps", s.requireAuth(http.HandlerFunc(s.createApp)))
+	mux.Handle("GET /v1/apps/{app_id}", s.requireAuth(http.HandlerFunc(s.getApp)))
+	mux.Handle("PATCH /v1/apps/{app_id}", s.requireAuth(http.HandlerFunc(s.patchApp)))
+	mux.Handle("GET /v1/apps/{app_id}/policies", s.requireAuth(http.HandlerFunc(s.listPolicies)))
+	mux.Handle("POST /v1/apps/{app_id}/policies", s.requireAuth(http.HandlerFunc(s.createPolicy)))
+	mux.Handle("GET /v1/policies/{policy_id}", s.requireAuth(http.HandlerFunc(s.getPolicy)))
+	mux.Handle("POST /v1/policies/{policy_id}/publish", s.requireAuth(http.HandlerFunc(s.publishPolicy)))
+	mux.Handle("GET /v1/events", s.requireAuth(http.HandlerFunc(s.listEvents)))
+	mux.Handle("GET /v1/events/{event_id}", s.requireAuth(http.HandlerFunc(s.getEvent)))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, r, http.StatusNotFound, "not_found", "route not found")
+	})
+	return requestIDMiddleware(loggingMiddleware(s.logger, secureHeaders(mux)))
+}
+
+func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := s.repo.Ping(ctx); err != nil {
+		writeError(w, r, http.StatusServiceUnavailable, "not_ready", "database is unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+func (s *Server) listTenants(w http.ResponseWriter, r *http.Request) {
+	tenants, err := s.repo.ListTenants(r.Context())
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tenants": tenants})
+}
+
+func (s *Server) createTenant(w http.ResponseWriter, r *http.Request) {
+	var req models.CreateTenantRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	req.Slug = strings.TrimSpace(req.Slug)
+	if req.Name == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "name is required")
+		return
+	}
+	if err := validateSlug("slug", req.Slug); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if err := validateJSON(req.Metadata, "metadata"); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	tenant, err := s.repo.CreateTenant(r.Context(), req)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, tenant)
+}
+
+func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
+	apps, err := s.repo.ListApps(r.Context())
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"apps": apps})
+}
+
+func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
+	var req models.CreateAppRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	originURL, ok := s.validateCreateApp(w, r, &req)
+	if !ok {
+		return
+	}
+	app, err := s.repo.CreateApp(r.Context(), req, originURL)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, app)
+}
+
+func (s *Server) getApp(w http.ResponseWriter, r *http.Request) {
+	app, err := s.repo.GetApp(r.Context(), r.PathValue("app_id"))
+	if err != nil {
+		s.handleReadError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, app)
+}
+
+func (s *Server) patchApp(w http.ResponseWriter, r *http.Request) {
+	var req models.UpdateAppRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	parsedOrigin, ok := s.validatePatchApp(w, r, &req)
+	if !ok {
+		return
+	}
+	app, err := s.repo.UpdateApp(r.Context(), r.PathValue("app_id"), req, parsedOrigin)
+	if err != nil {
+		s.handleReadError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, app)
+}
+
+func (s *Server) listPolicies(w http.ResponseWriter, r *http.Request) {
+	policies, err := s.repo.ListPoliciesByApp(r.Context(), r.PathValue("app_id"))
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"policies": policies})
+}
+
+func (s *Server) createPolicy(w http.ResponseWriter, r *http.Request) {
+	var req models.CreatePolicyRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "name is required")
+		return
+	}
+	if req.Mode == "" {
+		req.Mode = "count"
+	}
+	if err := validateMode(req.Mode); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if err := validatePolicySnapshot(req.Snapshot); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	policy, err := s.repo.CreatePolicy(r.Context(), r.PathValue("app_id"), req)
+	if err != nil {
+		s.handleReadError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, policy)
+}
+
+func (s *Server) getPolicy(w http.ResponseWriter, r *http.Request) {
+	policy, err := s.repo.GetPolicy(r.Context(), r.PathValue("policy_id"))
+	if err != nil {
+		s.handleReadError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, policy)
+}
+
+func (s *Server) publishPolicy(w http.ResponseWriter, r *http.Request) {
+	published, err := s.repo.PublishPolicy(r.Context(), r.PathValue("policy_id"))
+	if err != nil {
+		s.handleReadError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, published)
+}
+
+func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 1000 {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "limit must be between 1 and 1000")
+			return
+		}
+		limit = parsed
+	}
+	events, err := s.repo.ListEvents(r.Context(), limit)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+func (s *Server) getEvent(w http.ResponseWriter, r *http.Request) {
+	event, err := s.repo.GetEvent(r.Context(), r.PathValue("event_id"))
+	if err != nil {
+		s.handleReadError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, event)
+}
+
+func (s *Server) validateCreateApp(w http.ResponseWriter, r *http.Request, req *models.CreateAppRequest) (*url.URL, bool) {
+	req.TenantID = strings.TrimSpace(req.TenantID)
+	req.Name = strings.TrimSpace(req.Name)
+	req.Slug = strings.TrimSpace(req.Slug)
+	if req.TenantID == "" || req.Name == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "tenant_id and name are required")
+		return nil, false
+	}
+	if err := validateSlug("slug", req.Slug); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return nil, false
+	}
+	if err := validateHostnames(req.Hostnames); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return nil, false
+	}
+	originURL, err := parseOriginURL(req.OriginURL)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return nil, false
+	}
+	if err := validateJSON(req.Metadata, "metadata"); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return nil, false
+	}
+	return originURL, true
+}
+
+func (s *Server) validatePatchApp(w http.ResponseWriter, r *http.Request, req *models.UpdateAppRequest) (*url.URL, bool) {
+	if req.Name != nil {
+		*req.Name = strings.TrimSpace(*req.Name)
+		if *req.Name == "" {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "name cannot be empty")
+			return nil, false
+		}
+	}
+	if len(req.Hostnames) > 0 {
+		if err := validateHostnames(req.Hostnames); err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+			return nil, false
+		}
+	}
+	if req.Status != nil && *req.Status != "active" && *req.Status != "disabled" {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "status must be active or disabled")
+		return nil, false
+	}
+	var originURL *url.URL
+	if req.OriginURL != nil {
+		parsed, err := parseOriginURL(*req.OriginURL)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+			return nil, false
+		}
+		originURL = parsed
+	}
+	if err := validateJSON(req.Metadata, "metadata"); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return nil, false
+	}
+	return originURL, true
+}
+
+func validatePolicySnapshot(snapshot json.RawMessage) error {
+	if len(snapshot) == 0 {
+		return nil
+	}
+	if err := validateJSON(snapshot, "snapshot"); err != nil {
+		return err
+	}
+	var decoded struct {
+		Mode     string              `json:"mode"`
+		Rules    []map[string]string `json:"rules"`
+		IPBlocks []string            `json:"ip_blocklist"`
+	}
+	if err := json.Unmarshal(snapshot, &decoded); err != nil {
+		return err
+	}
+	if decoded.Mode != "" {
+		if err := validateMode(decoded.Mode); err != nil {
+			return err
+		}
+	}
+	for _, cidr := range decoded.IPBlocks {
+		if err := validateCIDR(cidr); err != nil {
+			return err
+		}
+	}
+	for _, rule := range decoded.Rules {
+		if action := rule["action"]; action != "" {
+			if err := validateAction(action); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Server) requireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.auth.Authorized(r) {
+			writeError(w, r, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) handleReadError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, db.ErrNotFound) {
+		writeError(w, r, http.StatusNotFound, "not_found", "resource not found")
+		return
+	}
+	s.internalError(w, r, err)
+}
+
+func (s *Server) internalError(w http.ResponseWriter, r *http.Request, err error) {
+	s.logger.Error("request_failed", "error", err, "request_id", requestIDFromContext(r.Context()))
+	writeError(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+}

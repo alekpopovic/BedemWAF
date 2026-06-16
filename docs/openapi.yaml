@@ -1,0 +1,262 @@
+openapi: 3.1.0
+info:
+  title: BedemWAF Control API
+  version: 0.1.0
+  description: REST management API for BedemWAF tenants, apps, policies, and audit event references.
+servers:
+  - url: http://localhost:8081
+security:
+  - AdminBearerAuth: []
+paths:
+  /healthz:
+    get:
+      summary: Liveness check
+      security: []
+      responses:
+        "200":
+          description: Service is alive
+  /readyz:
+    get:
+      summary: Readiness check
+      security: []
+      responses:
+        "200":
+          description: Database is reachable
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/tenants:
+    get:
+      summary: List tenants
+      responses:
+        "200":
+          description: Tenant list
+    post:
+      summary: Create tenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTenantRequest"
+      responses:
+        "201":
+          description: Tenant created
+        "400":
+          $ref: "#/components/responses/Error"
+  /v1/apps:
+    get:
+      summary: List apps
+      responses:
+        "200":
+          description: App list
+    post:
+      summary: Create app with primary origin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAppRequest"
+      responses:
+        "201":
+          description: App created
+        "400":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{app_id}:
+    get:
+      summary: Get app
+      parameters:
+        - $ref: "#/components/parameters/AppID"
+      responses:
+        "200":
+          description: App
+        "404":
+          $ref: "#/components/responses/Error"
+    patch:
+      summary: Update app
+      parameters:
+        - $ref: "#/components/parameters/AppID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAppRequest"
+      responses:
+        "200":
+          description: App updated
+        "400":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{app_id}/policies:
+    get:
+      summary: List policies for app
+      parameters:
+        - $ref: "#/components/parameters/AppID"
+      responses:
+        "200":
+          description: Policy list
+    post:
+      summary: Create policy draft
+      parameters:
+        - $ref: "#/components/parameters/AppID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePolicyRequest"
+      responses:
+        "201":
+          description: Policy created
+  /v1/policies/{policy_id}:
+    get:
+      summary: Get policy
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: Policy
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/policies/{policy_id}/publish:
+    post:
+      summary: Publish policy draft to immutable policy version
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "201":
+          description: Policy version published
+  /v1/events:
+    get:
+      summary: List audit event references
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+      responses:
+        "200":
+          description: Event references
+  /v1/events/{event_id}:
+    get:
+      summary: Get audit event reference
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Event reference
+        "404":
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    AdminBearerAuth:
+      type: http
+      scheme: bearer
+      description: Static MVP admin token from BEDEMWAF_ADMIN_API_KEY.
+  parameters:
+    AppID:
+      name: app_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    PolicyID:
+      name: policy_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    Error:
+      description: JSON error response
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            request_id:
+              type: string
+    CreateTenantRequest:
+      type: object
+      required: [name, slug]
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9-]{0,62}$"
+        metadata:
+          type: object
+    CreateAppRequest:
+      type: object
+      required: [tenant_id, name, slug, hostnames, origin_url]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        hostnames:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        origin_url:
+          type: string
+          format: uri
+          description: http or https origin URL without query or fragment.
+        metadata:
+          type: object
+    UpdateAppRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        hostnames:
+          type: array
+          items:
+            type: string
+        origin_url:
+          type: string
+          format: uri
+        status:
+          type: string
+          enum: [active, disabled]
+        metadata:
+          type: object
+    CreatePolicyRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        mode:
+          type: string
+          enum: [count, block]
+          default: count
+        snapshot:
+          type: object
+          description: MVP policy JSON snapshot. Actions may be allow, count, block, or rate_limit.
