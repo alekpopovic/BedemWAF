@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Server     ServerConfig     `yaml:"server"`
 	Redis      RedisConfig      `yaml:"redis"`
+	ClickHouse ClickHouseConfig `yaml:"clickhouse"`
 	WAF        WAFConfig        `yaml:"waf"`
 	ControlAPI ControlAPIConfig `yaml:"control_api"`
 	Apps       []AppConfig      `yaml:"apps"`
@@ -26,6 +27,14 @@ type RedisConfig struct {
 	Enabled  bool   `yaml:"enabled"`
 	Addr     string `yaml:"addr"`
 	FailMode string `yaml:"fail_mode"`
+}
+
+type ClickHouseConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	URL      string `yaml:"url"`
+	Database string `yaml:"database"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
 }
 
 type WAFConfig struct {
@@ -147,6 +156,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Redis.FailMode == "" {
 		cfg.Redis.FailMode = "open"
+	}
+	if cfg.ClickHouse.URL == "" {
+		cfg.ClickHouse.URL = "http://localhost:8123"
+	}
+	if cfg.ClickHouse.Database == "" {
+		cfg.ClickHouse.Database = "bedemwaf"
 	}
 	if cfg.WAF.Engine == "" {
 		cfg.WAF.Engine = "coraza"

@@ -175,8 +175,42 @@ paths:
           $ref: "#/components/responses/Error"
   /v1/events:
     get:
-      summary: List audit event references
+      summary: Search WAF audit events
       parameters:
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+        - name: app_id
+          in: query
+          schema:
+            type: string
+        - name: host
+          in: query
+          schema:
+            type: string
+        - name: action
+          in: query
+          schema:
+            type: string
+        - name: client_ip
+          in: query
+          schema:
+            type: string
+        - name: matched_rule_id
+          in: query
+          schema:
+            type: string
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
         - name: limit
           in: query
           schema:
@@ -186,19 +220,21 @@ paths:
             default: 100
       responses:
         "200":
-          description: Event references
-  /v1/events/{event_id}:
+          description: WAF audit events
+        "400":
+          $ref: "#/components/responses/Error"
+  /v1/events/{request_id}:
     get:
-      summary: Get audit event reference
+      summary: Get WAF audit event by request ID
       parameters:
-        - name: event_id
+        - name: request_id
           in: path
           required: true
           schema:
             type: string
       responses:
         "200":
-          description: Event reference
+          description: WAF audit event
         "404":
           $ref: "#/components/responses/Error"
 components:

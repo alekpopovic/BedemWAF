@@ -8,6 +8,13 @@ redis:
   addr: "localhost:6379"
   fail_mode: "open"
 
+clickhouse:
+  enabled: false
+  url: "http://localhost:8123"
+  database: "bedemwaf"
+  username: "bedemwaf"
+  password: "${BEDEMWAF_CLICKHOUSE_PASSWORD}"
+
 control_api:
   enabled: false
   base_url: "http://localhost:8081"

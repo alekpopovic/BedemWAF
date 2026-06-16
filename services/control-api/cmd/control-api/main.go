@@ -14,6 +14,7 @@ import (
 	"github.com/bedemwaf/bedemwaf/services/control-api/internal/auth"
 	"github.com/bedemwaf/bedemwaf/services/control-api/internal/config"
 	"github.com/bedemwaf/bedemwaf/services/control-api/internal/db"
+	"github.com/bedemwaf/bedemwaf/services/control-api/internal/events"
 	"github.com/bedemwaf/bedemwaf/services/control-api/internal/httpapi"
 )
 
@@ -52,7 +53,18 @@ func main() {
 	repo := db.NewPostgresRepository(pool)
 	defer repo.Close()
 
-	api := httpapi.NewServer(repo, auth.NewStaticBearer(cfg.AdminAPIKey), auth.NewStaticBearer(cfg.GatewayAPIKey), logger)
+	eventStore, err := events.NewHTTPStore(events.Config{
+		URL:      cfg.ClickHouseURL,
+		Database: cfg.ClickHouseDatabase,
+		Username: cfg.ClickHouseUsername,
+		Password: cfg.ClickHousePassword,
+	}, nil)
+	if err != nil {
+		logger.Error("clickhouse_event_store_failed", "error", err)
+		os.Exit(1)
+	}
+
+	api := httpapi.NewServer(repo, eventStore, auth.NewStaticBearer(cfg.AdminAPIKey), auth.NewStaticBearer(cfg.GatewayAPIKey), logger)
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           api.Routes(),

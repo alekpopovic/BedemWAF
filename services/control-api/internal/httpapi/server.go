@@ -13,21 +13,23 @@ import (
 
 	"github.com/bedemwaf/bedemwaf/services/control-api/internal/auth"
 	"github.com/bedemwaf/bedemwaf/services/control-api/internal/db"
+	"github.com/bedemwaf/bedemwaf/services/control-api/internal/events"
 	"github.com/bedemwaf/bedemwaf/services/control-api/internal/models"
 )
 
 type Server struct {
 	repo        db.Repository
+	eventStore  events.Store
 	adminAuth   auth.StaticBearer
 	gatewayAuth auth.StaticBearer
 	logger      *slog.Logger
 }
 
-func NewServer(repo db.Repository, adminAuth auth.StaticBearer, gatewayAuth auth.StaticBearer, logger *slog.Logger) *Server {
+func NewServer(repo db.Repository, eventStore events.Store, adminAuth auth.StaticBearer, gatewayAuth auth.StaticBearer, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{repo: repo, adminAuth: adminAuth, gatewayAuth: gatewayAuth, logger: logger}
+	return &Server{repo: repo, eventStore: eventStore, adminAuth: adminAuth, gatewayAuth: gatewayAuth, logger: logger}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -263,27 +265,69 @@ func (s *Server) getGatewayPolicy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
-	limit := 100
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 || parsed > 1000 {
-			writeError(w, r, http.StatusBadRequest, "invalid_request", "limit must be between 1 and 1000")
-			return
-		}
-		limit = parsed
+	filters, ok := parseEventFilters(w, r)
+	if !ok {
+		return
 	}
-	events, err := s.repo.ListEvents(r.Context(), limit)
+	events, err := s.eventStore.Search(r.Context(), filters)
 	if err != nil {
-		s.internalError(w, r, err)
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
+func parseEventFilters(w http.ResponseWriter, r *http.Request) (events.SearchFilters, bool) {
+	values := r.URL.Query()
+	limit := events.DefaultLimit
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > events.MaxLimit {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "limit must be between 1 and 1000")
+			return events.SearchFilters{}, false
+		}
+		limit = parsed
+	}
+	filters := events.SearchFilters{
+		TenantID:      values.Get("tenant_id"),
+		AppID:         values.Get("app_id"),
+		Host:          values.Get("host"),
+		Action:        values.Get("action"),
+		ClientIP:      values.Get("client_ip"),
+		MatchedRuleID: values.Get("matched_rule_id"),
+		Limit:         limit,
+	}
+	if raw := values.Get("from"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "from must be RFC3339")
+			return events.SearchFilters{}, false
+		}
+		filters.From = parsed
+	}
+	if raw := values.Get("to"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "to must be RFC3339")
+			return events.SearchFilters{}, false
+		}
+		filters.To = parsed
+	}
+	if !filters.From.IsZero() && !filters.To.IsZero() && filters.From.After(filters.To) {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "from must be before to")
+		return events.SearchFilters{}, false
+	}
+	return filters, true
+}
+
 func (s *Server) getEvent(w http.ResponseWriter, r *http.Request) {
-	event, err := s.repo.GetEvent(r.Context(), r.PathValue("event_id"))
+	event, err := s.eventStore.GetByRequestID(r.Context(), r.PathValue("event_id"))
 	if err != nil {
-		s.handleReadError(w, r, err)
+		if errors.Is(err, events.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "not_found", "event not found")
+			return
+		}
+		s.internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, event)

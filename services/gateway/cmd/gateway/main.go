@@ -60,7 +60,21 @@ func main() {
 		logger.Error("build_waf_failed", "error", err)
 		os.Exit(1)
 	}
-	auditDispatcher, err := audit.NewDispatcher(1024, logger, audit.NewJSONStdoutSink(os.Stdout))
+	auditSinks := []audit.Sink{audit.NewJSONStdoutSink(os.Stdout)}
+	if cfg.ClickHouse.Enabled {
+		clickHouseSink, err := audit.NewClickHouseSink(audit.ClickHouseConfig{
+			URL:      cfg.ClickHouse.URL,
+			Database: cfg.ClickHouse.Database,
+			Username: cfg.ClickHouse.Username,
+			Password: cfg.ClickHouse.Password,
+		}, nil)
+		if err != nil {
+			logger.Error("build_clickhouse_audit_sink_failed", "error", err)
+			os.Exit(1)
+		}
+		auditSinks = append(auditSinks, clickHouseSink)
+	}
+	auditDispatcher, err := audit.NewDispatcher(1024, logger, auditSinks...)
 	if err != nil {
 		logger.Error("build_audit_dispatcher_failed", "error", err)
 		os.Exit(1)

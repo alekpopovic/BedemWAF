@@ -1,11 +1,16 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -89,15 +94,135 @@ func (s *JSONStdoutSink) Write(ctx context.Context, event Event) error {
 	return json.NewEncoder(s.out).Encode(event)
 }
 
-type ClickHouseSink struct{}
-
-func NewClickHouseSink() *ClickHouseSink {
-	return &ClickHouseSink{}
+type ClickHouseConfig struct {
+	URL      string
+	Database string
+	Username string
+	Password string
 }
 
-func (s *ClickHouseSink) Write(context.Context, Event) error {
-	// TODO: Batch inserts into ClickHouse with retry/backoff and bounded memory.
+type ClickHouseSink struct {
+	endpoint   string
+	database   string
+	username   string
+	password   string
+	httpClient *http.Client
+}
+
+func NewClickHouseSink(cfg ClickHouseConfig, client *http.Client) (*ClickHouseSink, error) {
+	parsed, err := url.Parse(cfg.URL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("invalid clickhouse url")
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 3 * time.Second}
+	}
+	if cfg.Database == "" {
+		cfg.Database = "bedemwaf"
+	}
+	return &ClickHouseSink{
+		endpoint:   strings.TrimRight(parsed.String(), "/"),
+		database:   cfg.Database,
+		username:   cfg.Username,
+		password:   cfg.Password,
+		httpClient: client,
+	}, nil
+}
+
+func (s *ClickHouseSink) Write(ctx context.Context, event Event) error {
+	row := clickHouseEvent{
+		Timestamp:       event.Timestamp.UTC().Format("2006-01-02 15:04:05.000"),
+		RequestID:       event.RequestID,
+		TenantID:        event.TenantID,
+		AppID:           event.AppID,
+		PolicyID:        event.PolicyID,
+		PolicyVersionID: event.PolicyVersion,
+		Host:            event.Host,
+		ClientIP:        event.ClientIP,
+		Method:          event.Method,
+		Path:            event.Path,
+		Action:          event.Action,
+		Mode:            event.Mode,
+		Status:          clampUInt16(event.Status),
+		Reason:          event.Reason,
+		MatchedRuleID:   event.MatchedRuleID,
+		MatchedRuleName: event.MatchedRuleName,
+		RuleGroup:       event.RuleGroup,
+		Tags:            event.Tags,
+		AnomalyScore:    int32(event.AnomalyScore),
+		UserAgent:       event.UserAgent,
+		LatencyMS:       clampUInt32(event.LatencyMS),
+		OriginStatus:    clampUInt16(event.OriginStatus),
+		OriginLatencyMS: clampUInt32(event.OriginLatencyMS),
+	}
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(row); err != nil {
+		return err
+	}
+	query := `INSERT INTO waf_events FORMAT JSONEachRow`
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.endpoint+"/?database="+url.QueryEscape(s.database)+"&query="+url.QueryEscape(query), &body)
+	if err != nil {
+		return err
+	}
+	if s.username != "" || s.password != "" {
+		req.SetBasicAuth(s.username, s.password)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("clickhouse insert failed: status=%d body=%q", resp.StatusCode, string(data))
+	}
 	return nil
+}
+
+type clickHouseEvent struct {
+	Timestamp       string   `json:"timestamp"`
+	RequestID       string   `json:"request_id"`
+	TenantID        string   `json:"tenant_id"`
+	AppID           string   `json:"app_id"`
+	PolicyID        string   `json:"policy_id"`
+	PolicyVersionID string   `json:"policy_version_id"`
+	Host            string   `json:"host"`
+	ClientIP        string   `json:"client_ip"`
+	Method          string   `json:"method"`
+	Path            string   `json:"path"`
+	Action          string   `json:"action"`
+	Mode            string   `json:"mode"`
+	Status          uint16   `json:"status"`
+	Reason          string   `json:"reason"`
+	MatchedRuleID   string   `json:"matched_rule_id"`
+	MatchedRuleName string   `json:"matched_rule_name"`
+	RuleGroup       string   `json:"rule_group"`
+	Tags            []string `json:"tags"`
+	AnomalyScore    int32    `json:"anomaly_score"`
+	UserAgent       string   `json:"user_agent"`
+	LatencyMS       uint32   `json:"latency_ms"`
+	OriginStatus    uint16   `json:"origin_status"`
+	OriginLatencyMS uint32   `json:"origin_latency_ms"`
+}
+
+func clampUInt16(value int) uint16 {
+	if value < 0 {
+		return 0
+	}
+	if value > 65535 {
+		return 65535
+	}
+	return uint16(value)
+}
+
+func clampUInt32(value int64) uint32 {
+	if value < 0 {
+		return 0
+	}
+	if value > 1<<32-1 {
+		return 1<<32 - 1
+	}
+	return uint32(value)
 }
 
 type Metrics struct {

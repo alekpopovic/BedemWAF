@@ -12,6 +12,7 @@ import (
 
 	"github.com/bedemwaf/bedemwaf/services/control-api/internal/auth"
 	"github.com/bedemwaf/bedemwaf/services/control-api/internal/db"
+	"github.com/bedemwaf/bedemwaf/services/control-api/internal/events"
 	"github.com/bedemwaf/bedemwaf/services/control-api/internal/models"
 )
 
@@ -115,7 +116,7 @@ func TestReadyzUsesRepositoryPing(t *testing.T) {
 
 func TestPublishFlowCreatesImmutableVersionAndActiveGatewayPolicy(t *testing.T) {
 	repo := newFakeRepo()
-	handler := NewServer(repo, auth.NewStaticBearer("test-admin-key"), auth.NewStaticBearer("test-gateway-key"), nil).Routes()
+	handler := NewServer(repo, &fakeEventStore{}, auth.NewStaticBearer("test-admin-key"), auth.NewStaticBearer("test-gateway-key"), nil).Routes()
 	createBody := bytes.NewBufferString(`{
 		"name":"Default Policy",
 		"mode":"count",
@@ -193,9 +194,50 @@ func TestGatewayPolicyRequiresGatewayToken(t *testing.T) {
 	}
 }
 
+func TestEventsAPIRequiresAuth(t *testing.T) {
+	handler := testServer(t).Routes()
+	req := httptest.NewRequest(http.MethodGet, "/v1/events", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestEventsAPIFiltersAndLimit(t *testing.T) {
+	eventStore := &fakeEventStore{}
+	handler := NewServer(newFakeRepo(), eventStore, auth.NewStaticBearer("test-admin-key"), auth.NewStaticBearer("test-gateway-key"), nil).Routes()
+	req := authedRequest(http.MethodGet, "/v1/events?tenant_id=tenant-1&app_id=app-1&host=example.local&action=block&client_ip=198.51.100.10&matched_rule_id=rule-1&limit=25&from=2026-06-16T10:00:00Z&to=2026-06-16T11:00:00Z", bytes.NewBuffer(nil))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	got := eventStore.lastFilters
+	if got.TenantID != "tenant-1" || got.AppID != "app-1" || got.Host != "example.local" || got.Action != "block" || got.ClientIP != "198.51.100.10" || got.MatchedRuleID != "rule-1" || got.Limit != 25 {
+		t.Fatalf("filters = %+v, want query filters", got)
+	}
+}
+
+func TestEventsAPIDateRangeValidation(t *testing.T) {
+	handler := testServer(t).Routes()
+	req := authedRequest(http.MethodGet, "/v1/events?from=2026-06-16T11:00:00Z&to=2026-06-16T10:00:00Z", bytes.NewBuffer(nil))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
 func testServer(t *testing.T) *Server {
 	t.Helper()
-	return NewServer(newFakeRepo(), auth.NewStaticBearer("test-admin-key"), auth.NewStaticBearer("test-gateway-key"), nil)
+	return NewServer(newFakeRepo(), &fakeEventStore{}, auth.NewStaticBearer("test-admin-key"), auth.NewStaticBearer("test-gateway-key"), nil)
 }
 
 func authedRequest(method, path string, body *bytes.Buffer) *http.Request {
@@ -420,4 +462,20 @@ func defaultJSON(value json.RawMessage, fallback string) json.RawMessage {
 		return json.RawMessage(fallback)
 	}
 	return value
+}
+
+type fakeEventStore struct {
+	lastFilters events.SearchFilters
+}
+
+func (f *fakeEventStore) Search(_ context.Context, filters events.SearchFilters) ([]events.Event, error) {
+	f.lastFilters = filters
+	return []events.Event{{RequestID: "req-1", TenantID: filters.TenantID}}, nil
+}
+
+func (f *fakeEventStore) GetByRequestID(_ context.Context, requestID string) (events.Event, error) {
+	if requestID == "missing" {
+		return events.Event{}, events.ErrNotFound
+	}
+	return events.Event{RequestID: requestID}, nil
 }
