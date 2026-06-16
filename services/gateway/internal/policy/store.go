@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/bedemwaf/bedemwaf/services/gateway/internal/config"
 	"github.com/bedemwaf/bedemwaf/services/gateway/internal/decision"
@@ -201,6 +202,39 @@ func NormalizeHost(host string) string {
 		}
 	}
 	return strings.Trim(host, "[]")
+}
+
+func ValidHost(host string) bool {
+	raw := strings.TrimSpace(strings.ToLower(host))
+	if raw == "" || strings.ContainsAny(raw, " \t\r\n/@") || strings.Contains(raw, "://") {
+		return false
+	}
+	host = NormalizeHost(host)
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	if strings.ContainsAny(host, " \t\r\n/@") {
+		return false
+	}
+	if strings.Contains(host, "..") {
+		return false
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return true
+	}
+	labels := strings.Split(strings.TrimSuffix(host, "."), ".")
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }
 
 func (a *App) EvaluateIP(clientIP netip.Addr) decision.Decision {

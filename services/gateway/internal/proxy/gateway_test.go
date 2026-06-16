@@ -35,6 +35,33 @@ func TestNoMatchingAppReturns404(t *testing.T) {
 	}
 }
 
+func TestHealthzBypassesPolicyLookup(t *testing.T) {
+	gateway := testGateway(t, "block", "http://127.0.0.1:9000", ratelimit.NoopLimiter{})
+	req := httptest.NewRequest(http.MethodGet, "http://unconfigured.local/healthz", nil)
+	req.RemoteAddr = "198.51.100.10:12345"
+	rec := httptest.NewRecorder()
+
+	gateway.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestInvalidHostReturns400(t *testing.T) {
+	gateway := testGateway(t, "block", "http://127.0.0.1:9000", ratelimit.NoopLimiter{})
+	req := httptest.NewRequest(http.MethodGet, "http://example.local/", nil)
+	req.Host = "bad host.example.local"
+	req.RemoteAddr = "198.51.100.10:12345"
+	rec := httptest.NewRecorder()
+
+	gateway.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
 func TestBlockModeReturns403ForBlockedIP(t *testing.T) {
 	gateway := testGateway(t, "block", "http://127.0.0.1:9000", ratelimit.NoopLimiter{})
 	req := httptest.NewRequest(http.MethodGet, "http://example.local/", nil)
@@ -58,6 +85,48 @@ func TestCountModeAllowsWouldBlockIP(t *testing.T) {
 
 	if rec.Code == http.StatusForbidden {
 		t.Fatalf("status = %d, want count mode to proxy instead of enforcing 403", rec.Code)
+	}
+}
+
+func TestTrustedProxyControlsXForwardedForClientIP(t *testing.T) {
+	gateway := testGatewayWithOptions(t, testGatewayOptions{
+		mode:           "block",
+		originURL:      "http://origin.local",
+		limiter:        ratelimit.NoopLimiter{},
+		waf:            waf.AllowEngine{},
+		transport:      roundTripFunc(func(req *http.Request) (*http.Response, error) { return textResponse(req, http.StatusOK, "ok") }),
+		auditOut:       io.Discard,
+		trustedProxies: []string{"10.0.0.0/8"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.local/", nil)
+	req.RemoteAddr = "10.1.2.3:12345"
+	req.Header.Set("X-Forwarded-For", "203.0.113.10, 10.1.2.3")
+	rec := httptest.NewRecorder()
+
+	gateway.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 from forwarded blocked IP", rec.Code)
+	}
+
+	untrustedGateway := testGatewayWithOptions(t, testGatewayOptions{
+		mode:           "block",
+		originURL:      "http://origin.local",
+		limiter:        ratelimit.NoopLimiter{},
+		waf:            waf.AllowEngine{},
+		transport:      roundTripFunc(func(req *http.Request) (*http.Response, error) { return textResponse(req, http.StatusOK, "ok") }),
+		auditOut:       io.Discard,
+		trustedProxies: []string{"10.0.0.0/8"},
+	})
+	req = httptest.NewRequest(http.MethodGet, "http://example.local/", nil)
+	req.RemoteAddr = "198.51.100.10:12345"
+	req.Header.Set("X-Forwarded-For", "203.0.113.10")
+	rec = httptest.NewRecorder()
+
+	untrustedGateway.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 because untrusted X-Forwarded-For is ignored", rec.Code)
 	}
 }
 
@@ -360,13 +429,14 @@ func testGateway(t *testing.T, mode string, originURL string, limiter ratelimit.
 }
 
 type testGatewayOptions struct {
-	mode      string
-	originURL string
-	limiter   ratelimit.Limiter
-	waf       waf.Engine
-	transport http.RoundTripper
-	auditOut  io.Writer
-	bodyLimit int64
+	mode           string
+	originURL      string
+	limiter        ratelimit.Limiter
+	waf            waf.Engine
+	transport      http.RoundTripper
+	auditOut       io.Writer
+	bodyLimit      int64
+	trustedProxies []string
 }
 
 func testGatewayWithOptions(t *testing.T, opts testGatewayOptions) *Gateway {
@@ -376,7 +446,7 @@ func testGatewayWithOptions(t *testing.T, opts testGatewayOptions) *Gateway {
 		bodyLimit = 1 << 20
 	}
 	cfg := config.Config{
-		Server: config.ServerConfig{ListenAddr: ":8080"},
+		Server: config.ServerConfig{ListenAddr: ":8080", TrustedProxies: opts.trustedProxies},
 		WAF: config.WAFConfig{
 			Enabled:               true,
 			Engine:                "coraza",

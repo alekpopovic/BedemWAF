@@ -84,12 +84,28 @@ func NewGateway(opts Options) (*Gateway, error) {
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			g.logger.Error("gateway_panic_recovered", "panic", recovered)
+			writeJSONError(w, http.StatusInternalServerError, "", "internal server error")
+		}
+	}()
+	if r.URL.Path == "/healthz" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
+		return
+	}
 	start := time.Now()
 	requestID := requestID()
 	recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 
 	clientIP := g.clientIP(r)
 	host := policy.NormalizeHost(r.Host)
+	if !policy.ValidHost(host) {
+		writeJSONError(recorder, http.StatusBadRequest, requestID, "invalid host")
+		return
+	}
 	event := audit.Event{
 		Timestamp:     time.Now().UTC(),
 		RequestID:     requestID,

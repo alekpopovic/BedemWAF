@@ -212,6 +212,8 @@ Next implementation steps:
 - [Policy Model](docs/policy-model.md)
 - [Database Schema](docs/database-schema.md)
 - [Event Schema](docs/event-schema.md)
+- [Security Hardening](docs/security-hardening.md)
+- [Production Checklist](docs/production-checklist.md)
 
 ## Docs Site
 

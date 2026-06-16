@@ -28,7 +28,7 @@ export default function LoginPage() {
         </div>
         <div className="notice">
           Development mode only: the admin API key is stored in browser localStorage. TODO: replace this with proper
-          session authentication before production use.
+          session authentication and CSRF protection before production use.
         </div>
         <form className="form" onSubmit={submit} style={{ marginTop: 18 }}>
           <div className="field">

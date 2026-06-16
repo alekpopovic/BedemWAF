@@ -41,6 +41,73 @@ func TestV1RequiresBearerToken(t *testing.T) {
 	assertErrorShape(t, rec.Body.Bytes(), "unauthorized")
 }
 
+func TestV1RejectsInvalidBearerToken(t *testing.T) {
+	handler := testServer(t).Routes()
+	req := httptest.NewRequest(http.MethodGet, "/v1/tenants", nil)
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	assertErrorShape(t, rec.Body.Bytes(), "unauthorized")
+}
+
+func TestGatewayRoutesRejectAdminToken(t *testing.T) {
+	handler := testServer(t).Routes()
+	req := httptest.NewRequest(http.MethodGet, "/v1/gateway/apps/example.local/policy", nil)
+	req.Header.Set("Authorization", "Bearer test-admin-key")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	assertErrorShape(t, rec.Body.Bytes(), "unauthorized")
+}
+
+func TestCORSAllowsConfiguredOriginsOnly(t *testing.T) {
+	server := testServer(t)
+	server.ConfigureSecurity(SecurityConfig{CORSAllowedOrigins: []string{"https://dashboard.example.local", "*"}})
+	handler := server.Routes()
+
+	allowedReq := httptest.NewRequest(http.MethodOptions, "/v1/tenants", nil)
+	allowedReq.Header.Set("Origin", "https://dashboard.example.local")
+	allowedRec := httptest.NewRecorder()
+	handler.ServeHTTP(allowedRec, allowedReq)
+
+	if got := allowedRec.Header().Get("Access-Control-Allow-Origin"); got != "https://dashboard.example.local" {
+		t.Fatalf("allowed origin header = %q, want configured origin", got)
+	}
+
+	blockedReq := httptest.NewRequest(http.MethodOptions, "/v1/tenants", nil)
+	blockedReq.Header.Set("Origin", "https://evil.example")
+	blockedRec := httptest.NewRecorder()
+	handler.ServeHTTP(blockedRec, blockedReq)
+
+	if got := blockedRec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("blocked origin header = %q, want empty", got)
+	}
+}
+
+func TestRequestBodyLimitReturnsJSONError(t *testing.T) {
+	server := testServer(t)
+	server.ConfigureSecurity(SecurityConfig{RequestBodyLimitBytes: 16})
+	handler := server.Routes()
+	req := authedRequest(http.MethodPost, "/v1/tenants", bytes.NewBufferString(`{"name":"Demo Tenant","slug":"body-too-large"}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	assertErrorShape(t, rec.Body.Bytes(), "invalid_json")
+}
+
 func TestCreateTenant(t *testing.T) {
 	handler := testServer(t).Routes()
 	body := bytes.NewBufferString(`{"name":"Demo Tenant","slug":"demo"}`)

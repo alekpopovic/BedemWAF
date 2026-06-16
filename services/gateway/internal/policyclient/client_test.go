@@ -1,10 +1,11 @@
 package policyclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,11 +16,11 @@ import (
 
 func TestCacheHit(t *testing.T) {
 	var calls atomic.Int64
-	server := policyServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client := policyHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		writePolicy(t, w)
 	})
-	provider := testProvider(t, server.URL, FailClosed, time.Minute)
+	provider := testProvider(t, client, FailClosed, time.Minute)
 
 	first := provider.Lookup(context.Background(), "Example.Local")
 	second := provider.Lookup(context.Background(), "example.local")
@@ -37,11 +38,11 @@ func TestCacheHit(t *testing.T) {
 
 func TestCacheMiss(t *testing.T) {
 	var calls atomic.Int64
-	server := policyServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client := policyHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		writePolicy(t, w)
 	})
-	provider := testProvider(t, server.URL, FailClosed, time.Minute)
+	provider := testProvider(t, client, FailClosed, time.Minute)
 
 	got := provider.Lookup(context.Background(), "example.local")
 
@@ -58,11 +59,11 @@ func TestCacheMiss(t *testing.T) {
 
 func TestExpiredPolicyRefresh(t *testing.T) {
 	var calls atomic.Int64
-	server := policyServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client := policyHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		writePolicy(t, w)
 	})
-	provider := testProvider(t, server.URL, FailClosed, time.Second)
+	provider := testProvider(t, client, FailClosed, time.Second)
 	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
 	provider.now = func() time.Time { return now }
 
@@ -77,14 +78,14 @@ func TestExpiredPolicyRefresh(t *testing.T) {
 
 func TestStaleFallback(t *testing.T) {
 	var fail atomic.Bool
-	server := policyServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client := policyHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if fail.Load() {
 			http.Error(w, "down", http.StatusBadGateway)
 			return
 		}
 		writePolicy(t, w)
 	})
-	provider := testProvider(t, server.URL, FailClosed, time.Second)
+	provider := testProvider(t, client, FailClosed, time.Second)
 	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
 	provider.now = func() time.Time { return now }
 
@@ -102,10 +103,10 @@ func TestStaleFallback(t *testing.T) {
 }
 
 func TestFailOpenBehavior(t *testing.T) {
-	server := policyServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client := policyHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "down", http.StatusServiceUnavailable)
 	})
-	provider := testProvider(t, server.URL, FailOpen, time.Second)
+	provider := testProvider(t, client, FailOpen, time.Second)
 
 	got := provider.Lookup(context.Background(), "example.local")
 
@@ -115,10 +116,10 @@ func TestFailOpenBehavior(t *testing.T) {
 }
 
 func TestFailClosedBehavior(t *testing.T) {
-	server := policyServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client := policyHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "down", http.StatusServiceUnavailable)
 	})
-	provider := testProvider(t, server.URL, FailClosed, time.Second)
+	provider := testProvider(t, client, FailClosed, time.Second)
 
 	got := provider.Lookup(context.Background(), "example.local")
 
@@ -128,7 +129,7 @@ func TestFailClosedBehavior(t *testing.T) {
 }
 
 func TestInvalidPolicyRejected(t *testing.T) {
-	server := policyServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client := policyHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"tenant_id":         "tenant-1",
 			"app_id":            "app-1",
@@ -137,7 +138,7 @@ func TestInvalidPolicyRejected(t *testing.T) {
 			"mode":              "count",
 		})
 	})
-	provider := testProvider(t, server.URL, FailClosed, time.Second)
+	provider := testProvider(t, client, FailClosed, time.Second)
 
 	got := provider.Lookup(context.Background(), "example.local")
 
@@ -148,11 +149,11 @@ func TestInvalidPolicyRejected(t *testing.T) {
 
 func TestHostNormalization(t *testing.T) {
 	var gotPath string
-	server := policyServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client := policyHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		writePolicy(t, w)
 	})
-	provider := testProvider(t, server.URL, FailClosed, time.Minute)
+	provider := testProvider(t, client, FailClosed, time.Minute)
 
 	result := provider.Lookup(context.Background(), "Example.Local:443")
 
@@ -164,12 +165,12 @@ func TestHostNormalization(t *testing.T) {
 	}
 }
 
-func testProvider(t *testing.T, baseURL string, failBehavior string, ttl time.Duration) *Provider {
+func testProvider(t *testing.T, httpClient *http.Client, failBehavior string, ttl time.Duration) *Provider {
 	t.Helper()
 	client, err := NewClient(config.ControlAPIConfig{
-		BaseURL:       baseURL,
+		BaseURL:       "http://control-api.local",
 		GatewayAPIKey: "test-gateway-key",
-	}, nil)
+	}, httpClient)
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
@@ -179,14 +180,46 @@ func testProvider(t *testing.T, baseURL string, failBehavior string, ttl time.Du
 	}, nil)
 }
 
-func policyServer(t *testing.T, handler func(http.ResponseWriter, *http.Request)) *httptest.Server {
+func policyHTTPClient(t *testing.T, handler func(http.ResponseWriter, *http.Request)) *http.Client {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Header.Get("Authorization") != "Bearer test-gateway-key" {
 			t.Fatalf("Authorization = %q, want gateway bearer", r.Header.Get("Authorization"))
 		}
-		handler(w, r)
-	}))
+		rec := &responseRecorder{header: make(http.Header), status: http.StatusOK}
+		handler(rec, r)
+		return &http.Response{
+			StatusCode: rec.status,
+			Status:     http.StatusText(rec.status),
+			Header:     rec.header,
+			Body:       io.NopCloser(bytes.NewReader(rec.body.Bytes())),
+			Request:    r,
+		}, nil
+	})}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+type responseRecorder struct {
+	header http.Header
+	body   bytes.Buffer
+	status int
+}
+
+func (r *responseRecorder) Header() http.Header {
+	return r.header
+}
+
+func (r *responseRecorder) Write(data []byte) (int, error) {
+	return r.body.Write(data)
+}
+
+func (r *responseRecorder) WriteHeader(status int) {
+	r.status = status
 }
 
 func writePolicy(t *testing.T, w http.ResponseWriter) {

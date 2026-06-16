@@ -19,8 +19,13 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	ListenAddr     string   `yaml:"listen_addr"`
-	TrustedProxies []string `yaml:"trusted_proxies"`
+	ListenAddr              string   `yaml:"listen_addr"`
+	TrustedProxies          []string `yaml:"trusted_proxies"`
+	ReadHeaderTimeoutMillis int      `yaml:"read_header_timeout_millis"`
+	ReadTimeoutMillis       int      `yaml:"read_timeout_millis"`
+	WriteTimeoutMillis      int      `yaml:"write_timeout_millis"`
+	IdleTimeoutMillis       int      `yaml:"idle_timeout_millis"`
+	MaxHeaderBytes          int      `yaml:"max_header_bytes"`
 }
 
 type RedisConfig struct {
@@ -151,6 +156,21 @@ func applyDefaults(cfg *Config) {
 	if cfg.Server.ListenAddr == "" {
 		cfg.Server.ListenAddr = ":8080"
 	}
+	if cfg.Server.ReadHeaderTimeoutMillis == 0 {
+		cfg.Server.ReadHeaderTimeoutMillis = 5000
+	}
+	if cfg.Server.ReadTimeoutMillis == 0 {
+		cfg.Server.ReadTimeoutMillis = 30000
+	}
+	if cfg.Server.WriteTimeoutMillis == 0 {
+		cfg.Server.WriteTimeoutMillis = 30000
+	}
+	if cfg.Server.IdleTimeoutMillis == 0 {
+		cfg.Server.IdleTimeoutMillis = 60000
+	}
+	if cfg.Server.MaxHeaderBytes == 0 {
+		cfg.Server.MaxHeaderBytes = 1 << 20
+	}
 	if cfg.Redis.Addr == "" {
 		cfg.Redis.Addr = "localhost:6379"
 	}
@@ -257,6 +277,12 @@ func validate(cfg Config) error {
 		if app.Policy.Mode != "count" && app.Policy.Mode != "block" {
 			return fmt.Errorf("app %q has invalid policy mode %q", app.ID, app.Policy.Mode)
 		}
+	}
+	if cfg.Server.ReadHeaderTimeoutMillis < 0 || cfg.Server.ReadTimeoutMillis < 0 || cfg.Server.WriteTimeoutMillis < 0 || cfg.Server.IdleTimeoutMillis < 0 {
+		return fmt.Errorf("server timeouts must be non-negative")
+	}
+	if cfg.Server.MaxHeaderBytes < 0 {
+		return fmt.Errorf("server max_header_bytes must be non-negative")
 	}
 	if cfg.WAF.Enabled {
 		if cfg.WAF.Engine != "coraza" {

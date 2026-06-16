@@ -18,18 +18,42 @@ import (
 )
 
 type Server struct {
-	repo        db.Repository
-	eventStore  events.Store
-	adminAuth   auth.StaticBearer
-	gatewayAuth auth.StaticBearer
-	logger      *slog.Logger
+	repo                  db.Repository
+	eventStore            events.Store
+	adminAuth             auth.StaticBearer
+	gatewayAuth           auth.StaticBearer
+	logger                *slog.Logger
+	requestBodyLimitBytes int64
+	corsAllowedOrigins    map[string]struct{}
+}
+
+type SecurityConfig struct {
+	RequestBodyLimitBytes int64
+	CORSAllowedOrigins    []string
 }
 
 func NewServer(repo db.Repository, eventStore events.Store, adminAuth auth.StaticBearer, gatewayAuth auth.StaticBearer, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{repo: repo, eventStore: eventStore, adminAuth: adminAuth, gatewayAuth: gatewayAuth, logger: logger}
+	server := &Server{repo: repo, eventStore: eventStore, adminAuth: adminAuth, gatewayAuth: gatewayAuth, logger: logger, requestBodyLimitBytes: 1 << 20}
+	server.ConfigureSecurity(SecurityConfig{CORSAllowedOrigins: []string{"http://localhost:3000", "http://127.0.0.1:3000"}})
+	return server
+}
+
+func (s *Server) ConfigureSecurity(cfg SecurityConfig) {
+	if cfg.RequestBodyLimitBytes > 0 {
+		s.requestBodyLimitBytes = cfg.RequestBodyLimitBytes
+	}
+	if len(cfg.CORSAllowedOrigins) > 0 {
+		s.corsAllowedOrigins = make(map[string]struct{}, len(cfg.CORSAllowedOrigins))
+		for _, origin := range cfg.CORSAllowedOrigins {
+			origin = strings.TrimSpace(origin)
+			if origin != "" && origin != "*" {
+				s.corsAllowedOrigins[origin] = struct{}{}
+			}
+		}
+	}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -54,7 +78,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "not_found", "route not found")
 	})
-	return requestIDMiddleware(loggingMiddleware(s.logger, devCORSMiddleware(secureHeaders(mux))))
+	return requestIDMiddleware(recoveryMiddleware(s.logger, loggingMiddleware(s.logger, s.corsMiddleware(secureHeaders(requestSizeLimitMiddleware(s.requestBodyLimitBytes, mux))))))
 }
 
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
@@ -252,8 +276,8 @@ func (s *Server) getActivePolicy(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getGatewayPolicy(w http.ResponseWriter, r *http.Request) {
 	hostname := strings.TrimSpace(strings.ToLower(r.PathValue("hostname")))
-	if hostname == "" {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "hostname is required")
+	if err := validateDNSName(hostname); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "hostname is invalid")
 		return
 	}
 	policy, err := s.repo.GetGatewayPolicyByHostname(r.Context(), hostname)
@@ -494,6 +518,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			writeError(w, r, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
 			return
 		}
+		// TODO: add a persistent per-token/admin-IP rate limiter before production.
 		next.ServeHTTP(w, r)
 	})
 }

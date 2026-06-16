@@ -97,7 +97,11 @@ func main() {
 	server := &http.Server{
 		Addr:              cfg.Server.ListenAddr,
 		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: durationMillis(cfg.Server.ReadHeaderTimeoutMillis),
+		ReadTimeout:       durationMillis(cfg.Server.ReadTimeoutMillis),
+		WriteTimeout:      durationMillis(cfg.Server.WriteTimeoutMillis),
+		IdleTimeout:       durationMillis(cfg.Server.IdleTimeoutMillis),
+		MaxHeaderBytes:    cfg.Server.MaxHeaderBytes,
 	}
 
 	go func() {
@@ -123,6 +127,13 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("gateway_stopped")
+}
+
+func durationMillis(value int) time.Duration {
+	if value <= 0 {
+		return 0
+	}
+	return time.Duration(value) * time.Millisecond
 }
 
 func buildPolicyProvider(cfg config.Config, logger *slog.Logger) (policy.Provider, *policy.Store, error) {

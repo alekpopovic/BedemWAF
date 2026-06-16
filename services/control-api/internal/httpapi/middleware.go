@@ -61,10 +61,31 @@ func secureHeaders(next http.Handler) http.Handler {
 	})
 }
 
-func devCORSMiddleware(next http.Handler) http.Handler {
+func recoveryMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				logger.Error("panic_recovered", "panic", recovered, "request_id", requestIDFromContext(r.Context()))
+				writeError(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func requestSizeLimitMiddleware(limit int64, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if limit > 0 && r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin == "http://localhost:3000" || origin == "http://127.0.0.1:3000" {
+		if _, ok := s.corsAllowedOrigins[origin]; ok {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID")

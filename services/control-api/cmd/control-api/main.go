@@ -65,6 +65,10 @@ func main() {
 	}
 
 	api := httpapi.NewServer(repo, eventStore, auth.NewStaticBearer(cfg.AdminAPIKey), auth.NewStaticBearer(cfg.GatewayAPIKey), logger)
+	api.ConfigureSecurity(httpapi.SecurityConfig{
+		RequestBodyLimitBytes: cfg.RequestBodyLimit,
+		CORSAllowedOrigins:    cfg.CORSAllowedOrigins,
+	})
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           api.Routes(),
@@ -72,6 +76,7 @@ func main() {
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {

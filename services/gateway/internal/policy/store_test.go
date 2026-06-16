@@ -30,6 +30,26 @@ func TestHostMatchingNormalizesHostAndPort(t *testing.T) {
 	}
 }
 
+func TestValidHostRejectsMalformedHostnames(t *testing.T) {
+	tests := map[string]bool{
+		"example.local":          true,
+		"example.local:8080":     true,
+		"localhost":              true,
+		"198.51.100.10":          true,
+		"https://example.local":  false,
+		"example.local/path":     false,
+		"bad host.example.local": false,
+		"-bad.example.local":     false,
+		"bad..example.local":     false,
+		"":                       false,
+	}
+	for host, want := range tests {
+		if got := ValidHost(host); got != want {
+			t.Fatalf("ValidHost(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
 func TestCIDRIPBlocklist(t *testing.T) {
 	store, err := NewStore([]config.AppConfig{{
 		ID:        "app-local",

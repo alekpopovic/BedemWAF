@@ -1,6 +1,11 @@
 server:
   listen_addr: ":8080"
   trusted_proxies: []
+  read_header_timeout_millis: 5000
+  read_timeout_millis: 30000
+  write_timeout_millis: 30000
+  idle_timeout_millis: 60000
+  max_header_bytes: 1048576
 
 redis:
   enabled: true

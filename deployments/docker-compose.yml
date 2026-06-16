@@ -5,8 +5,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-bedemwaf}
       POSTGRES_USER: ${POSTGRES_USER:-bedemwaf}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bedemwaf_dev_password}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+    expose:
+      - "5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/000000_init.sql:ro
@@ -19,8 +19,8 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
+    expose:
+      - "6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -35,9 +35,9 @@ services:
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-bedemwaf}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-bedemwaf}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-bedemwaf_dev_password}
-    ports:
-      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
-      - "${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
+    expose:
+      - "8123"
+      - "9000"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -54,6 +54,11 @@ services:
   demo-app:
     build:
       context: ./demo-app
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
     expose:
       - "8080"
     healthcheck:
@@ -64,6 +69,13 @@ services:
 
   nginx-origin:
     image: nginx:1.27-alpine
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
     ports:
       - "${NGINX_ORIGIN_PORT:-9000}:8080"
     volumes:
@@ -80,11 +92,18 @@ services:
   control-api:
     build:
       context: ../services/control-api
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
     environment:
       BEDEMWAF_CONTROL_API_ADDR: ":8081"
       BEDEMWAF_DATABASE_URL: postgres://${POSTGRES_USER:-bedemwaf}:${POSTGRES_PASSWORD:-bedemwaf_dev_password}@postgres:5432/${POSTGRES_DB:-bedemwaf}?sslmode=disable
       BEDEMWAF_ADMIN_API_KEY: ${BEDEMWAF_ADMIN_API_KEY:-local_dev_admin_key_change_me}
       BEDEMWAF_GATEWAY_API_KEY: ${BEDEMWAF_GATEWAY_API_KEY:-local_dev_gateway_key_change_me}
+      BEDEMWAF_CORS_ALLOWED_ORIGINS: ${BEDEMWAF_CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      BEDEMWAF_REQUEST_BODY_LIMIT_BYTES: ${BEDEMWAF_REQUEST_BODY_LIMIT_BYTES:-1048576}
       BEDEMWAF_CLICKHOUSE_URL: http://clickhouse:8123
       BEDEMWAF_CLICKHOUSE_DATABASE: ${CLICKHOUSE_DB:-bedemwaf}
       BEDEMWAF_CLICKHOUSE_USERNAME: ${CLICKHOUSE_USER:-bedemwaf}
@@ -105,6 +124,11 @@ services:
   gateway:
     build:
       context: ../services/gateway
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
     environment:
       BEDEMWAF_GATEWAY_API_KEY: ${BEDEMWAF_GATEWAY_API_KEY:-local_dev_gateway_key_change_me}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-bedemwaf_dev_password}
@@ -129,6 +153,11 @@ services:
   worker:
     build:
       context: ../services/worker
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
     environment:
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
     depends_on:
@@ -144,6 +173,11 @@ services:
       context: ../dashboard
       args:
         NEXT_PUBLIC_CONTROL_API_URL: ${NEXT_PUBLIC_CONTROL_API_URL:-http://localhost:8081}
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
     environment:
       NEXT_PUBLIC_CONTROL_API_URL: ${NEXT_PUBLIC_CONTROL_API_URL:-http://localhost:8081}
     ports:
